@@ -78,9 +78,6 @@ class FileGenerator(object):
     def create_block_device(self):
         raise NotImplementedError()
 
-    def create_fifo(self):
-        raise NotImplementedError()
-
     def create_socket(self):
         raise NotImplementedError()
 
@@ -161,3 +158,12 @@ class CopyfileTestCase(unittest.TestCase):
         _copyfile.copyfile(src, dst, follow_symlinks=False)
         self.assertTrue(is_symlink(dst))
         self.assertEqual(os.readlink(src), os.readlink(dst))
+
+    def test_copy_resource_fork(self):
+        src = self.fg.create_file()
+        dst = self.fg.create_filename()
+        rsrcfork = lambda p: os.path.join(p, '..namedfork', 'rsrc')
+        with open(rsrcfork(src), 'w') as f:
+            f.write('hello world')
+        _copyfile.copyfile(src, dst)
+        self.assertFalse(os.path.exists(rsrcfork(dst)))
