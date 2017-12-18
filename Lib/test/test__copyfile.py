@@ -133,7 +133,7 @@ class CopyfileTestCase(unittest.TestCase):
     def test_copy_into_directory(self):
         src = self.fg.create_file()
         dst = self.fg.create_directory()
-        with self.assertRaises(shutil.SpecialFileError):
+        with self.assertRaises(IsADirectoryError):
             _copyfile.copyfile(src, dst)
 
     def test_copy_samefile(self):

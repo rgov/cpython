@@ -2,8 +2,9 @@
 
 #include "Python.h"
 
-#include <fcntl.h>
 #include <copyfile.h>
+#include <errno.h>
+#include <fcntl.h>
 #include <sys/stat.h>
 
 
@@ -62,9 +63,9 @@ fn_copyfile(PyObject *self, PyObject *args, PyObject *kwargs)
     if (err == 0) {
         // If the destination is a directory, they probably wanted copy()
         if (S_ISDIR(dst_st.st_mode)) {
-            PyErr_Format(shutil_SpecialFileError,
-                         "`%s` is a directory. "
-                         "Did you want to use shutil.copy?", dst);
+            errno = EISDIR;
+            PyErr_SetFromErrnoWithFilenameObject(PyExc_OSError, 
+                                                 PyUnicode_FromString(dst));
             return NULL;
         }
         
