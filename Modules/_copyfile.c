@@ -80,7 +80,8 @@ fn_copyfile(PyObject *self, PyObject *args, PyObject *kwargs)
         // As of Python 3.4, if src and dst are the same file, shutil.copyfile()
         // raises a shutil.SameFileError exception.
         if (src_st.st_dev == dst_st.st_dev && src_st.st_ino == dst_st.st_ino) {
-            // TODO: Raise shutil.SameFileError("{!r} and {!r} are the same file")
+            PyErr_Format(shutil_SameFileError,
+                         "'%s' and '%s' are the same file", src, dst);
             return NULL;
         }
     }
