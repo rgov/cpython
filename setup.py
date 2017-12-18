@@ -840,6 +840,10 @@ class PyBuildExt(build_ext):
         else:
             missing.append('readline')
 
+        # copyfile module for macoS
+        if host_platform == 'darwin':
+            exts.append( Extension('_copyfile', ['_copyfile.c']) )
+
         # crypt module.
 
         if self.compiler.find_library_file(lib_dirs, 'crypt'):
