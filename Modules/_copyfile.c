@@ -7,6 +7,9 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 
+// Only for testing routines
+#include <sys/xattr.h>
+
 
 #ifndef __APPLE__
 #  error This extension is only for macOS.
@@ -22,7 +25,7 @@ PyObject *shutil_SpecialFileError = NULL;
 
 
 /* copyfile() ----------------------------------------------------------------*/
- 
+
 #define COPYFILE_METHOD_DEF \
     {"copyfile", (PyCFunction)fn_copyfile, METH_VARARGS|METH_KEYWORDS, NULL}
 
@@ -30,25 +33,25 @@ static PyObject *
 fn_copyfile(PyObject *self, PyObject *args, PyObject *kwargs)
 {
     int err;
-    
+
     // Parse function arguments
     int follow = 1;
     char *src, *dst;
 
     static char *kwlist[] = {"src", "dst", "follow_symlinks", NULL};
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "ss|$p", kwlist, &src, &dst, 
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "ss|$p", kwlist, &src, &dst,
                                      &follow))
         return NULL;
-    
+
     // Get information aboout the files before copying
     struct stat src_st, dst_st;
     err = (follow ? stat : lstat)(src, &src_st);
     if (err != 0) {
-        PyErr_SetFromErrnoWithFilenameObject(PyExc_OSError, 
+        PyErr_SetFromErrnoWithFilenameObject(PyExc_OSError,
                                              PyUnicode_FromString(src));
         return NULL;
     }
-    
+
     // XXX
     // shutil.copyfile() *only* checks if src is a FIFO. But the documentation
     // says other types of special files are not allowed either.
@@ -57,18 +60,18 @@ fn_copyfile(PyObject *self, PyObject *args, PyObject *kwargs)
                      "`%s` is not a regular file or symbolic link", src);
         return NULL;
     }
-    
-    // If the destination exists, we can look into it as well 
+
+    // If the destination exists, we can look into it as well
     err = stat(dst, &dst_st);
     if (err == 0) {
         // If the destination is a directory, they probably wanted copy()
         if (S_ISDIR(dst_st.st_mode)) {
             errno = EISDIR;
-            PyErr_SetFromErrnoWithFilenameObject(PyExc_OSError, 
+            PyErr_SetFromErrnoWithFilenameObject(PyExc_OSError,
                                                  PyUnicode_FromString(dst));
             return NULL;
         }
-        
+
         // XXX
         // shutil.copyfile() checks if dst is a FIFO, and raises a
         // shutil.SpecialFileError if so.
@@ -77,7 +80,7 @@ fn_copyfile(PyObject *self, PyObject *args, PyObject *kwargs)
                          "`%s` is a named pipe", dst);
             return NULL;
         }
-        
+
         // As of Python 3.4, if src and dst are the same file, shutil.copyfile()
         // raises a shutil.SameFileError exception.
         if (src_st.st_dev == dst_st.st_dev && src_st.st_ino == dst_st.st_ino) {
@@ -95,7 +98,7 @@ fn_copyfile(PyObject *self, PyObject *args, PyObject *kwargs)
 
     // Raise OSError if there is a problem. copyfile() sets errno for us.
     if (err != 0) {
-        PyErr_SetFromErrnoWithFilenameObjects(PyExc_OSError, 
+        PyErr_SetFromErrnoWithFilenameObjects(PyExc_OSError,
                                               PyUnicode_FromString(src),
                                               PyUnicode_FromString(dst));
         return NULL;
@@ -106,10 +109,84 @@ fn_copyfile(PyObject *self, PyObject *args, PyObject *kwargs)
 }
 
 
+/* xattr testing routines ----------------------------------------------------*/
+
+// These are for running tests. See the comment in test__copyfile.py.
+
+#define _GETXATTR_METHOD_DEF \
+    {"_getxattr", (PyCFunction)fn__getxattr, METH_VARARGS, NULL}
+
+static PyObject *
+fn__getxattr(PyObject *self, PyObject *args)
+{
+    // Parse function arguments
+    char *path, *name;
+    if (!PyArg_ParseTuple(args, "ss", &path, &name))
+        return NULL;
+
+    // Ask for the size of the attribute before we retrieve it
+    ssize_t len = getxattr(path, name, NULL, 0, 0, XATTR_NOFOLLOW);
+    if (len < 0) {
+        PyErr_SetFromErrnoWithFilenameObject(PyExc_OSError,
+                                             PyUnicode_FromString(path));
+        return NULL;
+    }
+
+    // Otherwise create a buffer and write into it
+    char *buffer = PyMem_New(char, (size_t)len);
+    ssize_t len2 = getxattr(path, name, buffer, len, 0, XATTR_NOFOLLOW);
+    if (len2 < 0) {
+        PyErr_SetFromErrnoWithFilenameObject(PyExc_OSError,
+                                             PyUnicode_FromString(path));
+        PyMem_Del(buffer);
+        return NULL;
+    } else if (len != len2) {
+        // XXX We don't do anything here, but we could.
+        /*
+        errno = EIO; // I/O error, vague enough
+        PyErr_SetFromErrnoWithFilenameObject(PyExc_OSError,
+                                             PyUnicode_FromString(path));
+        PyMem_Del(buffer);
+        return NULL;
+        */
+    }
+
+    PyObject *bytes = PyBytes_FromStringAndSize(buffer, len2);
+    PyMem_Del(buffer);
+    return bytes;
+}
+
+
+#define _SETXATTR_METHOD_DEF \
+    {"_setxattr", (PyCFunction)fn__setxattr, METH_VARARGS, NULL}
+
+static PyObject *
+fn__setxattr(PyObject *self, PyObject *args)
+{
+    // Parse function arguments
+    char *path, *name;
+    Py_buffer value;
+    if (!PyArg_ParseTuple(args, "ssy*", &path, &name, &value))
+        return NULL;
+
+    // Ask for the size of the attribute before we retrieve it
+    int err = setxattr(path, name, value.buf, value.len, 0, XATTR_NOFOLLOW);
+    if (err != 0) {
+        PyErr_SetFromErrnoWithFilenameObject(PyExc_OSError,
+                                             PyUnicode_FromString(path));
+        return NULL;
+    }
+
+    Py_RETURN_NONE;
+}
+
+
 /* ---------------------------------------------------------------------------*/
 
 static struct PyMethodDef _copyfile_functions[] = {
     COPYFILE_METHOD_DEF,
+    _GETXATTR_METHOD_DEF,
+    _SETXATTR_METHOD_DEF,
     {NULL, NULL}
 };
 
@@ -138,7 +215,7 @@ PyInit__copyfile(void)
     PyObject *shutil = PyImport_ImportModule("shutil");
     if (!shutil)
         return NULL;
-    
+
     shutil_SameFileError    = PyDict_GetItemString(PyModule_GetDict(shutil),
                                                    "SameFileError");
     shutil_SpecialFileError = PyDict_GetItemString(PyModule_GetDict(shutil),
