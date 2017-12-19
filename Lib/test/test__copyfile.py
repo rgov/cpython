@@ -4,6 +4,7 @@ family of copy functions (insofar as they are sensible).
 '''
 import _copyfile
 import errno
+import grp
 import os
 import stat
 import sys
@@ -224,6 +225,17 @@ class CopyfileTestCase(unittest.TestCase):
         os.chmod(src, mode)
         _copyfile.copyfile(src, dst)
         self.assertNotEqual(get_file_mode(dst), mode)
+
+    def test_copy_group(self):
+        src = self.fg.create_file()
+        dst = self.fg.create_filename()
+        gid = grp.getgrnam('everyone').gr_gid
+        self.assertNotEqual(gid, -1)  # group does not exist
+        self.assertNotEqual(os.lstat(src).st_gid, gid)  # wasn't already set
+        os.chown(src, -1, gid)
+        self.assertEqual(os.lstat(src).st_gid, gid)  # set successfully
+        _copyfile.copyfile(src, dst)
+        self.assertNotEqual(os.lstat(dst).st_gid, gid)  # not copied
 
     def test_copy_flags(self):
         src = self.fg.create_file()
