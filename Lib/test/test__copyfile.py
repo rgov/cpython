@@ -127,6 +127,12 @@ class XattrTestCase(unittest.TestCase):
         _copyfile._setxattr(f, name, value)
         self.assertEqual(_copyfile._getxattr(f, name), value)
 
+    def test_xattr_read_empty(self):
+        name = 'org.python._copyfile.test'
+        f = self.fg.create_file()
+        _copyfile._setxattr(f, name, b'')
+        self.assertEqual(_copyfile._getxattr(f, name), b'')
+
     def test_xattr_read_nonexistent(self):
         name = 'org.python._copyfile.test'
         f = self.fg.create_file()

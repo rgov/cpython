@@ -132,6 +132,10 @@ fn__getxattr(PyObject *self, PyObject *args)
         return NULL;
     }
 
+    // Special case: when len is zero, we don't need to getxattr again
+    if (len == 0)
+        return PyBytes_FromStringAndSize(NULL, 0);
+
     // Otherwise create a buffer and write into it
     char *buffer = PyMem_New(char, (size_t)len);
     ssize_t len2 = getxattr(path, name, buffer, len, 0, XATTR_NOFOLLOW);
@@ -169,7 +173,7 @@ fn__setxattr(PyObject *self, PyObject *args)
     if (!PyArg_ParseTuple(args, "ssy*", &path, &name, &value))
         return NULL;
 
-    // Ask for the size of the attribute before we retrieve it
+    // Set the attribute
     int err = setxattr(path, name, value.buf, value.len, 0, XATTR_NOFOLLOW);
     if (err != 0) {
         PyErr_SetFromErrnoWithFilenameObject(PyExc_OSError,
