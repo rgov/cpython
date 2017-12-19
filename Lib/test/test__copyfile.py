@@ -143,6 +143,38 @@ class XattrTestCase(unittest.TestCase):
 
 
 @unittest.skipUnless(sys.platform == 'darwin', 'requires macOS')
+class ACLTestCase(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.fg = FileGenerator()
+
+    @classmethod
+    def tearDownClass(cls):
+        if DEBUG:
+            print()
+            print('Keeping working directory for', cls.__name__)
+            print('  ' + cls.fg.tempdir)
+        else:
+            cls.fg.destroy()
+        cls.fg = None
+
+    def test_acl_readwrite(self):
+        # XXX `chmod +a` actually uses a completely different ACL parser
+        # (implemented in file_cmds/chmod_acl.c) than acl_from_text
+        # (implemented in Libc/acl_translate.c)
+        acl = '!#acl 1\nuser:00000000-0000-0000-0000-000000000000:::deny:read\n'
+        f = self.fg.create_file()
+        _copyfile._setacl(f, acl)
+        self.assertEqual(_copyfile._getacl(f), acl)
+
+    def test_acl_write_invalid(self):
+        f = self.fg.create_file()
+        with self.assertRaises(OSError) as cm:
+            _copyfile._setacl(f, 'hello world')
+        self.assertEqual(cm.exception.errno, errno.EINVAL)
+
+
+@unittest.skipUnless(sys.platform == 'darwin', 'requires macOS')
 class CopyfileTestCase(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -255,7 +287,14 @@ class CopyfileTestCase(unittest.TestCase):
         self.assertEqual(os.lstat(dst).st_flags & stat.SF_RESTRICTED, 0)
 
     def test_copy_acls(self):
-        pass
+        acl = '!#acl 1\nuser:00000000-0000-0000-0000-000000000000:::deny:read\n'
+        src = self.fg.create_file()
+        dst = self.fg.create_filename()
+        _copyfile._setacl(src, acl)
+        _copyfile.copyfile(src, dst)
+        # For whatever reason, if the ACL doesn't exist, this is the exception
+        with self.assertRaises(FileNotFoundError):
+            _copyfile._getacl(dst)
 
     def test_copy_xattrs(self):
         name, value = 'org.python._copyfile.test', b'hello world'

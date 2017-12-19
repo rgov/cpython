@@ -7,8 +7,12 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 
-// Only for testing routines
+// Only for xattr testing routines
 #include <sys/xattr.h>
+
+// Only for ACL testing routines
+#include <sys/types.h>
+#include <sys/acl.h>
 
 
 #ifndef __APPLE__
@@ -185,12 +189,78 @@ fn__setxattr(PyObject *self, PyObject *args)
 }
 
 
+/* ACL testing routines ------------------------------------------------------*/
+
+// These are for running tests only.
+
+#define _GETACL_METHOD_DEF \
+    {"_getacl", (PyCFunction)fn__getacl, METH_VARARGS, NULL}
+
+static PyObject *
+fn__getacl(PyObject *self, PyObject *args)
+{
+    // Parse function arguments
+    char *path;
+    if (!PyArg_ParseTuple(args, "s", &path))
+        return NULL;
+
+    // Try to read the ACL on the file
+    // XXX As of Libc-1244.1.7, ACL_TYPE_EXTENDED is the only supported type
+    acl_t acl = acl_get_link_np(path, ACL_TYPE_EXTENDED);
+    if (!acl) {
+        PyErr_SetFromErrnoWithFilenameObject(PyExc_OSError,
+                                             PyUnicode_FromString(path));
+        return NULL;
+    }
+
+    // Convert the ACL to text and return it
+    char *text = acl_to_text(acl, NULL);
+    PyObject *pytext = PyUnicode_FromString(text);
+    free(text);  // not PyMem_RawFree?
+    return pytext;
+}
+
+
+#define _SETACL_METHOD_DEF \
+    {"_setacl", (PyCFunction)fn__setacl, METH_VARARGS, NULL}
+
+static PyObject *
+fn__setacl(PyObject *self, PyObject *args)
+{
+    // Parse function arguments
+    char *path, *aclstr;
+    if (!PyArg_ParseTuple(args, "ss", &path, &aclstr))
+        return NULL;
+
+    // Try to parse the text
+    acl_t acl = acl_from_text(aclstr);
+    if (!acl) {
+        PyErr_SetFromErrno(PyExc_OSError);
+        return NULL;
+    }
+
+    // Try to set the ACL on the file
+    // XXX As of Libc-1244.1.7, ACL_TYPE_EXTENDED is the only supported type
+    int err = acl_set_file(path, ACL_TYPE_EXTENDED, acl);
+    acl_free(acl);
+    if (err != 0) {
+        PyErr_SetFromErrnoWithFilenameObject(PyExc_OSError,
+                                             PyUnicode_FromString(path));
+        return NULL;
+    }
+
+    Py_RETURN_NONE;
+}
+
+
 /* ---------------------------------------------------------------------------*/
 
 static struct PyMethodDef _copyfile_functions[] = {
     COPYFILE_METHOD_DEF,
     _GETXATTR_METHOD_DEF,
     _SETXATTR_METHOD_DEF,
+    _GETACL_METHOD_DEF,
+    _SETACL_METHOD_DEF,
     {NULL, NULL}
 };
 
