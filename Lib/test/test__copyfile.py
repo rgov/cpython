@@ -46,7 +46,7 @@ class FileGenerator(object):
                 test, line = frame.name[5:], frame.lineno
                 self.counters.setdefault((test, line), 0)
                 self.counters[(test, line)] += 1
-                name = '%s_line-%d_%d_%s' % \
+                name = '%s-line_%d-%d-%s' % \
                     (test, line, self.counters[(test, line)], kind)
                 break
         else:
@@ -229,7 +229,7 @@ class CopyfileTestCase(unittest.TestCase):
         with self.assertRaises(shutil.SameFileError):
             self.module.copyfile(src, src)
 
-    def test_follow_symlinks(self):
+    def test_follow_src_symlink(self):
         contents = 'hello world'
         target = self.fg.create_file(contents)
         src = self.fg.create_symlink(target)
@@ -239,13 +239,46 @@ class CopyfileTestCase(unittest.TestCase):
         with open(dst) as f:
             self.assertEqual(f.read(), contents)
 
-    def test_dont_follow_symlinks(self):
+    def test_dont_follow_src_symlink(self):
         target = self.fg.create_file()
         src = self.fg.create_symlink(target)
         dst = self.fg.create_filename('link')
         self.module.copyfile(src, dst, follow_symlinks=False)
         self.assertTrue(is_symlink(dst))
         self.assertEqual(os.readlink(src), os.readlink(dst))
+
+    def test_follow_dst_symlink(self):
+        contents = 'hello world'
+        target = self.fg.create_file() # this file will be overwritten
+        src = self.fg.create_file(contents)
+        dst = self.fg.create_symlink(target)
+        self.module.copyfile(src, dst, follow_symlinks=True)
+        self.assertTrue(is_symlink(dst))
+        with open(target) as f:
+            self.assertEqual(f.read(), contents)
+
+    def test_follow_dst_hanging_symlink(self):
+        contents = 'hello world'
+        target = self.fg.create_filename() # this file doesn't exist yet
+        src = self.fg.create_file(contents)
+        dst = self.fg.create_symlink(target)
+        self.module.copyfile(src, dst, follow_symlinks=True)
+        self.assertTrue(is_symlink(dst))
+        self.assertTrue(is_regular_file(target)) # should exist now
+        with open(target) as f:
+            self.assertEqual(f.read(), contents)
+
+    # Explanation: follow_symlinks=False only affects src; if dst is a symlink
+    # it is always followed.
+    def test_always_follow_dst_symlink(self):
+        contents1, contents2 = 'hello world', 'goodnight moon'
+        target = self.fg.create_file(contents1) # this file will be overwritten
+        src = self.fg.create_file(contents2)
+        dst = self.fg.create_symlink(target)
+        self.module.copyfile(src, dst, follow_symlinks=False)
+        self.assertTrue(is_symlink(dst)) # still a symlink
+        with open(target) as f:
+            self.assertEqual(f.read(), contents2)
 
     def test_copy_resource_fork(self):
         src = self.fg.create_file()
@@ -313,5 +346,7 @@ class CopyfileTestCase(unittest.TestCase):
         self.assertEqual(cm.exception.errno, errno.ENOATTR)
 
 
+# We also run the same test cases against shutil as a cross-check to make sure
+# our behavior is the same
 class ShutilTestCase(CopyfileTestCase):
     module = shutil

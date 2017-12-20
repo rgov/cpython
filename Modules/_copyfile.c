@@ -70,7 +70,7 @@ TODO:
       "Copy the source file's POSIX information (mode, timestamp, etc.)") \
     F(copy_xattr, COPYFILE_XATTR, \
       "Copy the source file's extended attributes") \
-    F(follow_symlinks, COPYFILE_NOFOLLOW_SRC, \
+    F(dont_follow_symlinks, COPYFILE_NOFOLLOW_SRC, \
       "Follow the source file, if it is a symbolic link") \
     F(move,       COPYFILE_MOVE, \
       "Unlink the source file after copying") \
@@ -106,6 +106,14 @@ options_to_flags(CopyOptions opts) {
     if (opts.OPTNAME) \
         flags |= FLAGNAME;
 APPLY_TO_OPTIONS(SET_FLAG_FOR_OPTION)
+
+    // We'd prefer to clone the file if we can, but COPYFILE_CLONE implies
+    // COPYFILE_EXCL which causes a failure if the destination already exists.
+    // So, we have to also tell copyfile to unlink the destination.
+    if (opts.copy_acl && opts.copy_acl && opts.copy_stat && opts.copy_xattr)
+        if (opts.copy_data && opts.dont_follow_symlinks)
+            flags |= COPYFILE_UNLINK | COPYFILE_CLONE;
+
     return flags;
 }
 
@@ -163,7 +171,8 @@ fn_copyfile(PyObject *self, PyObject *args, PyObject *kwargs)
         return NULL;
     }
 
-    // If the destination exists, we can look into it as well
+    // If the destination exists, we can look into it as well. (We always
+    // follow a dst symlink).
     err = stat(dst, &dst_st);
     if (err == 0) {
         // If the destination is a directory, they probably wanted copy()
@@ -191,6 +200,24 @@ fn_copyfile(PyObject *self, PyObject *args, PyObject *kwargs)
             return NULL;
         }
     }
+
+    // Here's an interesting corner case. If dst is a symlink that points to
+    // a nonexistent file, copyfile(3) will fail.
+    else if (err == -1 && errno == ENOENT) {
+        err = lstat(dst, &dst_st);
+        if (S_ISLNK(dst_st.st_mode)) {
+            // Touch the destination
+            int fd = open(dst, O_CREAT | O_WRONLY, dst_st.st_mode);
+            if (fd == -1) {
+                PyErr_SetFromErrnoWithFilenameObject(PyExc_OSError,
+                                                     PyUnicode_FromString(dst));
+                return NULL;
+            }
+            close(fd);
+        }
+    }
+
+    // Note: dst_st can't be relied on at this point -- %< --
 
     // Perform the copy
     copyfile_flags_t flags = options_to_flags(opts_copyfile);
