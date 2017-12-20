@@ -151,8 +151,15 @@ fn_copyfile(PyObject *self, PyObject *args, PyObject *kwargs)
     // shutil.copyfile() *only* checks if src is a FIFO. But the documentation
     // says other types of special files are not allowed either.
     if (!S_ISREG(src_st.st_mode) && !S_ISLNK(src_st.st_mode)) {
-        PyErr_Format(shutil.SpecialFileError,
-                     "`%s` is not a regular file or symbolic link", src);
+        if (S_ISDIR(src_st.st_mode)) {
+            // This matches the behavior of shutil.copyfile()
+            errno = EISDIR;
+            PyErr_SetFromErrnoWithFilenameObject(PyExc_OSError,
+                                                 PyUnicode_FromString(dst));
+        } else {
+            PyErr_Format(shutil.SpecialFileError,
+                         "`%s` is not a regular file or symbolic link", src);
+        }
         return NULL;
     }
 

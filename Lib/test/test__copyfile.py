@@ -2,21 +2,25 @@
 The goal of the _copyfile extension module is to mimic the behavior of shutil's
 family of copy functions (insofar as they are sensible).
 '''
+import os
+
+# This environment variable disables the use of _copyfile in shutil, so that we
+# can check that our behavior matches the original implementation.
+#
+# We must import shutil very early, or else it might be imported as a
+# dependency of some other module without the environment being set up.
+os.environ['SHUTIL_DO_NOT_USE__COPYFILE'] = '1'
+import shutil
+
 import _copyfile
 import errno
 import grp
-import os
 import stat
 import sys
 import tempfile
 import traceback
 import uuid
 import unittest
-
-# TODO:
-# Of course, once shutil changes to using _copyfile under the hood, we will need
-# a way to import the plain-Python module.
-import shutil
 
 
 # Set to True and the temporary files will not be destroyed
@@ -176,6 +180,8 @@ class ACLTestCase(unittest.TestCase):
 
 @unittest.skipUnless(sys.platform == 'darwin', 'requires macOS')
 class CopyfileTestCase(unittest.TestCase):
+    module = _copyfile
+
     @classmethod
     def setUpClass(cls):
         cls.fg = FileGenerator()
@@ -194,7 +200,7 @@ class CopyfileTestCase(unittest.TestCase):
         contents = 'hello world'
         src = self.fg.create_file(contents)
         dst = self.fg.create_filename()
-        _copyfile.copyfile(src, dst)
+        self.module.copyfile(src, dst)
         with open(dst) as f:
             self.assertEqual(f.read(), contents)
 
@@ -202,33 +208,33 @@ class CopyfileTestCase(unittest.TestCase):
         contents1, contents2 = 'hello world', 'good night moon'
         src = self.fg.create_file(contents1)
         dst = self.fg.create_file(contents2)
-        _copyfile.copyfile(src, dst)
+        self.module.copyfile(src, dst)
         with open(dst) as f:
             self.assertEqual(f.read(), contents1)
 
     def test_copy_directory(self):
         src = self.fg.create_directory()
         dst = self.fg.create_filename()
-        with self.assertRaises(shutil.SpecialFileError):
-            _copyfile.copyfile(src, dst)
+        with self.assertRaises(IsADirectoryError):
+            self.module.copyfile(src, dst)
 
     def test_copy_into_directory(self):
         src = self.fg.create_file()
         dst = self.fg.create_directory()
         with self.assertRaises(IsADirectoryError):
-            _copyfile.copyfile(src, dst)
+            self.module.copyfile(src, dst)
 
     def test_copy_samefile(self):
         src = self.fg.create_file()
         with self.assertRaises(shutil.SameFileError):
-            _copyfile.copyfile(src, src)
+            self.module.copyfile(src, src)
 
     def test_follow_symlinks(self):
         contents = 'hello world'
         target = self.fg.create_file(contents)
         src = self.fg.create_symlink(target)
         dst = self.fg.create_filename()
-        _copyfile.copyfile(src, dst, follow_symlinks=True)
+        self.module.copyfile(src, dst, follow_symlinks=True)
         self.assertTrue(is_regular_file(dst))
         with open(dst) as f:
             self.assertEqual(f.read(), contents)
@@ -237,7 +243,7 @@ class CopyfileTestCase(unittest.TestCase):
         target = self.fg.create_file()
         src = self.fg.create_symlink(target)
         dst = self.fg.create_filename('link')
-        _copyfile.copyfile(src, dst, follow_symlinks=False)
+        self.module.copyfile(src, dst, follow_symlinks=False)
         self.assertTrue(is_symlink(dst))
         self.assertEqual(os.readlink(src), os.readlink(dst))
 
@@ -247,7 +253,7 @@ class CopyfileTestCase(unittest.TestCase):
         rsrcfork = lambda p: os.path.join(p, '..namedfork', 'rsrc')
         with open(rsrcfork(src), 'w') as f:
             f.write('hello world')
-        _copyfile.copyfile(src, dst)
+        self.module.copyfile(src, dst)
         self.assertFalse(os.path.exists(rsrcfork(dst)))
 
     def test_copy_mode(self):
@@ -255,7 +261,7 @@ class CopyfileTestCase(unittest.TestCase):
         dst = self.fg.create_filename()
         mode = get_file_mode(src) ^ stat.S_IWGRP  # flip some bit
         os.chmod(src, mode)
-        _copyfile.copyfile(src, dst)
+        self.module.copyfile(src, dst)
         self.assertNotEqual(get_file_mode(dst), mode)
 
     def test_copy_group(self):
@@ -266,7 +272,7 @@ class CopyfileTestCase(unittest.TestCase):
         self.assertNotEqual(os.lstat(src).st_gid, gid)  # wasn't already set
         os.chown(src, -1, gid)
         self.assertEqual(os.lstat(src).st_gid, gid)  # set successfully
-        _copyfile.copyfile(src, dst)
+        self.module.copyfile(src, dst)
         self.assertNotEqual(os.lstat(dst).st_gid, gid)  # not copied
 
     def test_copy_flags(self):
@@ -274,7 +280,7 @@ class CopyfileTestCase(unittest.TestCase):
         dst = self.fg.create_filename()
         flags = os.lstat(src).st_flags ^ stat.UF_HIDDEN # flip some flag
         os.lchflags(src, flags)
-        _copyfile.copyfile(src, dst)
+        self.module.copyfile(src, dst)
         self.assertNotEqual(os.lstat(dst).st_flags, flags)
 
     def test_copy_restricted_flags(self):
@@ -283,7 +289,7 @@ class CopyfileTestCase(unittest.TestCase):
         src = '/System/Library/CoreServices/SystemVersion.plist'
         dst = self.fg.create_filename()
         self.assertNotEqual(os.lstat(src).st_flags & stat.SF_RESTRICTED, 0)
-        _copyfile.copyfile(src, dst)
+        self.module.copyfile(src, dst)
         self.assertEqual(os.lstat(dst).st_flags & stat.SF_RESTRICTED, 0)
 
     def test_copy_acls(self):
@@ -291,17 +297,21 @@ class CopyfileTestCase(unittest.TestCase):
         src = self.fg.create_file()
         dst = self.fg.create_filename()
         _copyfile._setacl(src, acl)
-        _copyfile.copyfile(src, dst)
+        self.module.copyfile(src, dst)
         # For whatever reason, if the ACL doesn't exist, this is the exception
         with self.assertRaises(FileNotFoundError):
             _copyfile._getacl(dst)
 
     def test_copy_xattrs(self):
-        name, value = 'org.python._copyfile.test', b'hello world'
+        name, value = 'org.python.self.module.test', b'hello world'
         src = self.fg.create_file()
         dst = self.fg.create_filename()
         _copyfile._setxattr(src, name, value)
-        _copyfile.copyfile(src, dst)
+        self.module.copyfile(src, dst)
         with self.assertRaises(OSError) as cm:
             _copyfile._getxattr(dst, name)
         self.assertEqual(cm.exception.errno, errno.ENOATTR)
+
+
+class ShutilTestCase(CopyfileTestCase):
+    module = shutil
