@@ -1,6 +1,7 @@
 /* An interface to copyfile(3) on macOS */
 
 #include "Python.h"
+#include "structmember.h"
 
 #include <copyfile.h>
 #include <errno.h>
@@ -16,7 +17,7 @@
 
 
 #ifndef __APPLE__
-#  error This extension is only for macOS.
+#   error This extension is only for macOS.
 #endif
 
 #ifdef __cplusplus
@@ -24,14 +25,104 @@ extern "C" {
 #endif
 
 
-PyObject *shutil_SameFileError = NULL;
-PyObject *shutil_SpecialFileError = NULL;
+struct {
+    PyObject *SameFileError;
+    PyObject *SpecialFileError;
+} shutil;
+
+
+/*
+Cheat sheet of behaviors of the shutil functions:
+
+            | args | data | metadata   | recursive | dest dir | unlink src
+------------+------+------+----------- +-----------+----------+-----------
+copy        | str  | yes  | mode       | no        | yes      | no
+copy2       | str  | yes  | all        | no        | yes      | no
+copyfile    | str  | yes  | no         | no        | no       | no
+copyfileobj | fd   | yes  | no         | no        | no       | no
+copymode    | str  | no   | mode       | no        | no       | no
+copystat    | str  | no   | mode,xattr | no        | no       | no
+copytree    | str  | yes  | all        | yes       | no?      | no
+move        | str  | opt  | optional   | yes       | yes      | yes
+*/
+
+/*
+TODO:
+  [ ] Create a data type which encapsulates these behavior flags
+  [ ] Create a lookup tables for mapping copy*() -> behavior set
+  [ ] Implement a generic copy routine with parameterized behavior
+  [ ] Implement wrappers that match the shutil interface
+  [ ] Expose the behavior sets to Python for testing
+  [ ] Parameterize the tests
+*/
+
+
+// This macro takes another macro, F, as its parameter, and invokes F once per
+// option. It makes the code a little less readable, sorry, but gives us only
+// one place to update when we want to add a new option.
+#define APPLY_TO_OPTIONS(F) \
+    /* F(name, flag, doc_string) */ \
+    F(copy_acl,   COPYFILE_ACL, \
+      "Copy the source file's access control lists") \
+    F(copy_data,  COPYFILE_DATA, \
+      "Copy the source file's data") \
+    F(copy_stat,  COPYFILE_STAT, \
+      "Copy the source file's POSIX information (mode, timestamp, etc.)") \
+    F(copy_xattr, COPYFILE_XATTR, \
+      "Copy the source file's extended attributes") \
+    F(follow_symlinks, COPYFILE_NOFOLLOW_SRC, \
+      "Follow the source file, if it is a symbolic link") \
+    F(move,       COPYFILE_MOVE, \
+      "Unlink the source file after copying") \
+    F(recursive,  COPYFILE_RECURSIVE, \
+      "Recursively copy a hierarchy")
+
+typedef struct {
+    PyObject_HEAD
+#define OPT_STRUCT_MEMBER(NAME, _, __) char NAME;
+APPLY_TO_OPTIONS(OPT_STRUCT_MEMBER)
+} CopyOptions;
+
+static struct PyMemberDef CopyOptions_Members[] = {
+#define OPT_TYPE_MEMBER_DESCRIPTOR(NAME, _, DOC) \
+    {#NAME, T_BOOL, offsetof(CopyOptions, NAME), 0, DOC},
+APPLY_TO_OPTIONS(OPT_TYPE_MEMBER_DESCRIPTOR)
+    {NULL}
+};
+
+static PyTypeObject CopyOptionsType = {
+    PyVarObject_HEAD_INIT(NULL, 0)
+    .tp_name = "_copyfile._CopyOptions",
+    .tp_basicsize = sizeof(CopyOptions),
+    .tp_members = CopyOptions_Members,
+    .tp_new = PyType_GenericNew,
+};
+
+
+static copyfile_flags_t
+options_to_flags(CopyOptions opts) {
+    copyfile_flags_t flags = 0;
+#define SET_FLAG_FOR_OPTION(OPTNAME, FLAGNAME, _) \
+    if (opts.OPTNAME) \
+        flags |= FLAGNAME;
+APPLY_TO_OPTIONS(SET_FLAG_FOR_OPTION)
+    return flags;
+}
+
+
+#undef OPT_STRUCT_MEMBER
+#undef OPT_TYPE_MEMBER_DESCRIPTOR
+#undef SET_FLAG_FOR_OPTION
 
 
 /* copyfile() ----------------------------------------------------------------*/
 
 #define COPYFILE_METHOD_DEF \
     {"copyfile", (PyCFunction)fn_copyfile, METH_VARARGS|METH_KEYWORDS, NULL}
+
+CopyOptions opts_copyfile = {
+    .copy_data = 1,
+};
 
 static PyObject *
 fn_copyfile(PyObject *self, PyObject *args, PyObject *kwargs)
@@ -60,7 +151,7 @@ fn_copyfile(PyObject *self, PyObject *args, PyObject *kwargs)
     // shutil.copyfile() *only* checks if src is a FIFO. But the documentation
     // says other types of special files are not allowed either.
     if (!S_ISREG(src_st.st_mode) && !S_ISLNK(src_st.st_mode)) {
-        PyErr_Format(shutil_SpecialFileError,
+        PyErr_Format(shutil.SpecialFileError,
                      "`%s` is not a regular file or symbolic link", src);
         return NULL;
     }
@@ -80,7 +171,7 @@ fn_copyfile(PyObject *self, PyObject *args, PyObject *kwargs)
         // shutil.copyfile() checks if dst is a FIFO, and raises a
         // shutil.SpecialFileError if so.
         if (S_ISFIFO(dst_st.st_mode)) {
-            PyErr_Format(shutil_SpecialFileError,
+            PyErr_Format(shutil.SpecialFileError,
                          "`%s` is a named pipe", dst);
             return NULL;
         }
@@ -88,16 +179,17 @@ fn_copyfile(PyObject *self, PyObject *args, PyObject *kwargs)
         // As of Python 3.4, if src and dst are the same file, shutil.copyfile()
         // raises a shutil.SameFileError exception.
         if (src_st.st_dev == dst_st.st_dev && src_st.st_ino == dst_st.st_ino) {
-            PyErr_Format(shutil_SameFileError,
+            PyErr_Format(shutil.SameFileError,
                          "'%s' and '%s' are the same file", src, dst);
             return NULL;
         }
     }
 
     // Perform the copy
-    copyfile_flags_t flags = COPYFILE_DATA;
+    copyfile_flags_t flags = options_to_flags(opts_copyfile);
     if (!follow)
         flags |= COPYFILE_NOFOLLOW_SRC;
+
     err = copyfile(src, dst, NULL, flags);
 
     // Raise OSError if there is a problem. copyfile() sets errno for us.
@@ -216,7 +308,7 @@ fn__getacl(PyObject *self, PyObject *args)
     // Convert the ACL to text and return it
     char *text = acl_to_text(acl, NULL);
     PyObject *pytext = PyUnicode_FromString(text);
-    free(text);  // not PyMem_RawFree?
+    free(text);
     return pytext;
 }
 
@@ -279,22 +371,25 @@ static struct PyModuleDef _copyfile_module = {
 PyMODINIT_FUNC
 PyInit__copyfile(void)
 {
-    PyObject *m;
-
-    m = PyModule_Create(&_copyfile_module);
+    PyObject *m = PyModule_Create(&_copyfile_module);
     if (m == NULL)
         return NULL;
 
+    // Set up the type
+    if (PyType_Ready(&CopyOptionsType) < 0)
+        return NULL;
+    PyModule_AddObject(m, "_CopyOptions", (PyObject *)&CopyOptionsType);
+
     // We need to reach into shutil for a few exceptions
-    PyObject *shutil = PyImport_ImportModule("shutil");
-    if (!shutil)
+    PyObject *shutilmod = PyImport_ImportModule("shutil");
+    if (!shutilmod)
         return NULL;
 
-    shutil_SameFileError    = PyDict_GetItemString(PyModule_GetDict(shutil),
+    shutil.SameFileError    = PyDict_GetItemString(PyModule_GetDict(shutilmod),
                                                    "SameFileError");
-    shutil_SpecialFileError = PyDict_GetItemString(PyModule_GetDict(shutil),
+    shutil.SpecialFileError = PyDict_GetItemString(PyModule_GetDict(shutilmod),
                                                    "SpecialFileError");
-    if (!shutil_SameFileError || !shutil_SpecialFileError)
+    if (!shutil.SameFileError || !shutil.SpecialFileError)
         return NULL;
 
     return m;
