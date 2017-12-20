@@ -1,10 +1,9 @@
 """Utility functions for copying and archiving files and directory trees.
 
-XXX The functions here don't copy the resource fork or other metadata on Mac.
-
 """
 
 import os
+import platform
 import sys
 import stat
 import fnmatch
@@ -1167,3 +1166,21 @@ def which(cmd, mode=os.F_OK | os.X_OK, path=None):
                 if _access_check(name, mode):
                     return name
     return None
+
+
+# Attempt to load the _copyfile extension module, which provides native
+# implementations of some of the copy* functions on macOS.
+try:
+    # XXX This environment variable is for testing, so we can use shutil's
+    # original implementation for cross-checking
+    if 'SHUTIL_DO_NOT_USE__COPYFILE' not in os.environ:
+        import _copyfile
+        copyfuncs = ('copy', 'copy2', 'copyfile', 'copyfileobj', 'copymode',
+                     'copystat', 'copytree')
+        for func in copyfuncs:
+            try:
+                globals()[func] = getattr(_copyfile, func)
+            except AttributeError:
+                pass
+except ImportError:
+    pass
